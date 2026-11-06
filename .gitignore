@@ -1,0 +1,6 @@
+# Created by the CI workflow to test how the action reports a syntax error
+.fixtures/
+
+# Operating system files
+.DS_Store
+Thumbs.db

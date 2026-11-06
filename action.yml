@@ -1,0 +1,75 @@
+name: "GitHub PHP Lint Action"
+description: "Check PHP files for syntax errors with php -l, on the PHP version you choose."
+branding:
+  icon: "check-circle"
+  color: "green"
+inputs:
+  php-version:
+    description: >-
+      PHP version to lint with, as accepted by shivammathur/setup-php (for example 8.5, 8.6, latest or nightly).
+      When empty, the version is read from a .php-version file or from the Composer platform configuration,
+      and falls back to the latest stable PHP release.
+    required: false
+    default: ""
+  setup-php:
+    description: "Install the PHP version above before linting. Set to false to lint with the php executable already on PATH."
+    required: false
+    default: "true"
+  path:
+    description: >-
+      Files or directories to lint, relative to the repository root. Newline or comma separated.
+      A file listed here is linted whatever its extension.
+    required: false
+    default: "."
+  exclude:
+    description: >-
+      Files, directories or wildcard patterns to skip, matched at any depth. Newline or comma separated.
+      Setting this input replaces the default list.
+    required: false
+    default: "vendor,node_modules"
+  extensions:
+    description: "File extensions to lint. Newline or comma separated."
+    required: false
+    default: "php"
+  fail-on-warnings:
+    description: "Fail when PHP reports warnings or deprecations while compiling a file."
+    required: false
+    default: "false"
+  annotations:
+    description: "Add an inline annotation for every problem found."
+    required: false
+    default: "true"
+outputs:
+  php-version:
+    description: "The full PHP version the files were linted with."
+    value: ${{ steps.lint.outputs.php-version }}
+  files-checked:
+    description: "The number of files that were linted."
+    value: ${{ steps.lint.outputs.files-checked }}
+  errors:
+    description: "The number of syntax errors found."
+    value: ${{ steps.lint.outputs.errors }}
+  warnings:
+    description: "The number of warnings and deprecations PHP reported."
+    value: ${{ steps.lint.outputs.warnings }}
+runs:
+  using: "composite"
+  steps:
+    - name: Setup PHP
+      if: inputs.setup-php != 'false'
+      uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+      with:
+        php-version: ${{ inputs.php-version }}
+        coverage: none
+        tools: none
+
+    - name: Lint PHP files
+      id: lint
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_EXTENSIONS: ${{ inputs.extensions }}
+        INPUT_FAIL_ON_WARNINGS: ${{ inputs.fail-on-warnings }}
+        INPUT_ANNOTATIONS: ${{ inputs.annotations }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/php-lint.sh"

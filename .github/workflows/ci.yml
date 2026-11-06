@@ -1,0 +1,173 @@
+name: Continuous Integration
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+
+  static-analysis:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the shell scripts
+        run: shellcheck scripts/*.sh tests/*.sh
+
+  unit-tests:
+    name: Tests (PHP ${{ matrix.php-version }})
+    runs-on: ubuntu-latest
+    # "nightly" is the next PHP release, still in development: a failure there is
+    # worth looking at, but it must not block a release of this action.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ["5.6", "7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5", "latest"]
+        experimental: [false]
+        include:
+          - php-version: "nightly"
+            experimental: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php-version }}
+          coverage: none
+          tools: none
+
+      - name: Run the test suite
+        run: bash tests/run-tests.sh
+
+  test-action:
+    name: GitHub Actions Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Lint with the default settings
+        id: defaults
+        uses: ./
+
+      - name: Lint with every input set
+        id: custom
+        uses: ./
+        with:
+          php-version: "8.3"
+          path: |
+            tests/fixtures/valid/src
+            tests/fixtures/valid/templates
+          exclude: templates
+          extensions: php, phtml
+          fail-on-warnings: true
+          annotations: true
+
+      - name: Lint with the PHP that is already installed
+        id: installed
+        uses: ./
+        with:
+          setup-php: false
+
+      - name: Create a file with a syntax error
+        run: |
+          mkdir -p .fixtures/broken
+          cp tests/fixtures/valid/hello.php .fixtures/broken/hello.php
+          printf '<?php\nfunction broken( {\n' > .fixtures/broken/broken.php
+
+      - name: Lint the file with a syntax error (expected to fail)
+        id: broken
+        continue-on-error: true
+        uses: ./
+        with:
+          path: .fixtures/broken
+          annotations: false
+
+      - name: Check the results
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          failures=0
+          # expect <jq filter on the steps context> <extended regular expression>
+          expect() {
+            local actual
+            actual="$(jq -r "$1" <<< "$STEPS")"
+            if [[ $actual =~ ^($2)$ ]]; then
+              echo "ok      $1 = $actual"
+            else
+              echo "::error::$1 is '$actual', expected '$2'"
+              failures=$((failures + 1))
+            fi
+          }
+
+          expect '.defaults.outcome' 'success'
+          expect '.defaults.outputs."files-checked"' '3'
+          expect '.defaults.outputs.errors' '0'
+          expect '.defaults.outputs.warnings' '0'
+          expect '.defaults.outputs."php-version"' '[0-9]+\.[0-9]+\.[0-9]+.*'
+
+          expect '.custom.outcome' 'success'
+          expect '.custom.outputs."files-checked"' '1'
+          expect '.custom.outputs."php-version"' '8\.3\.[0-9]+'
+
+          # 'setup-php: false' must lint with the PHP the previous step left on PATH.
+          expect '.installed.outcome' 'success'
+          expect '.installed.outputs."files-checked"' '3'
+          expect '.installed.outputs."php-version"' '8\.3\.[0-9]+'
+
+          expect '.broken.outcome' 'failure'
+          expect '.broken.outputs."files-checked"' '2'
+          expect '.broken.outputs.errors' '1'
+
+          exit "$((failures > 0))"
+
+  create-release:
+    name: Create release
+    needs: [static-analysis, unit-tests, test-action]
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+        with:
+          versionSpec: '6.x'
+
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+
+      - name: Create Release (tag)
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
+        with:
+          allowUpdates: false
+          skipIfReleaseExists: true
+          draft: false
+          makeLatest: true
+          tag: v${{ steps.gitversion.outputs.semVer }}
+          name: Release v${{ steps.gitversion.outputs.semVer }}
+          generateReleaseNotes: true
+          body:
+            Release ${{ steps.gitversion.outputs.semVer }} of ${{ github.event.repository.name }}

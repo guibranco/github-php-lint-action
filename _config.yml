@@ -1,0 +1,4 @@
+theme: jekyll-theme-cayman
+title: '🐘 A GitHub Action to check PHP files for syntax errors on the PHP version you choose.'
+description: 'A GitHub Action that lints PHP files with php -l on any PHP version, in parallel, and reports syntax errors as inline annotations and a job summary.'
+show_downloads: true
