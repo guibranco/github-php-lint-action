@@ -19,10 +19,10 @@ The following workflow steps check every `.php` file of the repository. Unless t
   uses: actions/checkout@v7
 
 - name: PHP Lint
-  uses: guibranco/github-php-lint-action@v1.0.0
+  uses: guibranco/github-php-lint-action@v1.1.0
 ```
 
-The step fails when a file has a syntax error. Every problem is listed in the job log and in the job summary, and shown as an annotation on the line it was found.
+The step fails when a file has a syntax error. Every problem is listed in the job log and in the job summary, shown as an annotation on the line it was found, and posted as a comment on the pull request (see [Pull request comment](#pull-request-comment)).
 
 ---
 
@@ -37,6 +37,8 @@ The step fails when a file has a syntax error. Every problem is listed in the jo
 | `extensions`       | File extensions to lint. Newline or comma separated                                                                 | No       | `php`                   |
 | `fail-on-warnings` | Fail when PHP reports warnings or deprecations while compiling a file                                               | No       | `false`                 |
 | `annotations`      | Add an inline annotation for every problem found                                                                    | No       | `true`                  |
+| `comment`          | Post the result as a comment on the pull request. See [Pull request comment](#pull-request-comment)                | No       | `true`                  |
+| `github-token`     | Token used to comment on the pull request                                                                           | No       | `${{ github.token }}`   |
 
 ---
 
@@ -48,6 +50,7 @@ The step fails when a file has a syntax error. Every problem is listed in the jo
 | `files-checked` | The number of files that were linted                 |
 | `errors`        | The number of syntax errors found                    |
 | `warnings`      | The number of warnings and deprecations PHP reported |
+| `comment-url`   | The URL of the comment posted on the pull request, when one was |
 
 ---
 
@@ -65,6 +68,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: write # to comment on the pull request
+
 jobs:
   php-lint:
     runs-on: ubuntu-latest
@@ -73,7 +80,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: PHP Lint
-        uses: guibranco/github-php-lint-action@v1.0.0
+        uses: guibranco/github-php-lint-action@v1.1.0
 ```
 
 ---
@@ -82,7 +89,7 @@ jobs:
 
 ```yml
 - name: PHP Lint
-  uses: guibranco/github-php-lint-action@v1.0.0
+  uses: guibranco/github-php-lint-action@v1.1.0
   with:
     php-version: "8.4"
 ```
@@ -106,7 +113,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: PHP Lint
-        uses: guibranco/github-php-lint-action@v1.0.0
+        uses: guibranco/github-php-lint-action@v1.1.0
         with:
           php-version: ${{ matrix.php-version }}
 ```
@@ -117,7 +124,7 @@ jobs:
 
 ```yml
 - name: PHP Lint
-  uses: guibranco/github-php-lint-action@v1.0.0
+  uses: guibranco/github-php-lint-action@v1.1.0
   with:
     path: |
       src
@@ -138,9 +145,20 @@ Directories are searched for files with the given extensions. A file listed in `
 
 ```yml
 - name: PHP Lint
-  uses: guibranco/github-php-lint-action@v1.0.0
+  uses: guibranco/github-php-lint-action@v1.1.0
   with:
     fail-on-warnings: true
+```
+
+---
+
+### Without the pull request comment
+
+```yml
+- name: PHP Lint
+  uses: guibranco/github-php-lint-action@v1.1.0
+  with:
+    comment: false
 ```
 
 ---
@@ -159,7 +177,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: PHP Lint
-        uses: guibranco/github-php-lint-action@v1.0.0
+        uses: guibranco/github-php-lint-action@v1.1.0
         with:
           setup-php: false
 ```
@@ -173,7 +191,7 @@ The container needs `bash`; the Alpine variants of the PHP images do not include
 ```yml
 - name: PHP Lint
   id: php-lint
-  uses: guibranco/github-php-lint-action@v1.0.0
+  uses: guibranco/github-php-lint-action@v1.1.0
 
 - name: Show the result
   if: always()
@@ -181,6 +199,7 @@ The container needs `bash`; the Alpine variants of the PHP images do not include
     echo "PHP ${{ steps.php-lint.outputs.php-version }}"
     echo "${{ steps.php-lint.outputs.files-checked }} files checked"
     echo "${{ steps.php-lint.outputs.errors }} errors, ${{ steps.php-lint.outputs.warnings }} warnings"
+    echo "Comment: ${{ steps.php-lint.outputs.comment-url }}"
 ```
 
 ---
@@ -209,6 +228,19 @@ PHP 8.5.12 - linting 25 files with 4 parallel jobs
 > | ❌  | `src/Api/Jobs.php`       |   42 | **Parse error:** syntax error, unexpected token "}"                                                                                             |
 > | ⚠️  | `src/Service/Github.php` |   17 | **Deprecated:** fetch(): Implicitly marking parameter $token as nullable is deprecated, the explicit nullable type must be used instead |
 
+### Comment on the pull request
+
+> ### 🐘 PHP Lint
+>
+> ❌ **1 syntax error** and 1 warning in 25 files checked with PHP 8.5.12.
+>
+> |     | File                     | Line | Message                                                                                                                                         |
+> | :-: | :----------------------- | ---: | :---------------------------------------------------------------------------------------------------------------------------------------------- |
+> | ❌  | `src/Api/Jobs.php`       |   42 | **Parse error:** syntax error, unexpected token "}"                                                                                             |
+> | ⚠️  | `src/Service/Github.php` |   17 | **Deprecated:** fetch(): Implicitly marking parameter $token as nullable is deprecated, the explicit nullable type must be used instead |
+>
+> <sub>Posted by [github-php-lint-action](https://github.com/guibranco/github-php-lint-action) · [Workflow run](#)</sub>
+
 ### Annotations
 
 Each problem is also attached to its file and line, so it shows up in the **Files changed** tab of the pull request and in the run summary. GitHub only displays a limited number of annotations per step; the job log always lists every problem, and the job summary the first 100.
@@ -221,6 +253,7 @@ Each problem is also attached to its file and line, so it shows up in the **File
 - ⚡ **Parallel linting**, one `php -l` process per CPU core
 - 🎯 **Inline annotations** on the offending file and line
 - 📊 **Job summary** with every error and warning
+- 💬 **Pull request comment** with the result, updated in place on every run
 - ⚠️ **Warnings and deprecations** PHP reports while compiling are surfaced, and can fail the build
 - 🧹 **Sensible defaults**: `vendor` and `node_modules` are skipped
 - 📎 **Workflow-friendly outputs**
@@ -244,6 +277,24 @@ Lint with the PHP version the code runs on: a newer version reports deprecations
 Versions that are still in development (`nightly`, or the number of the next release) are nightly builds, so a failure there can come from PHP itself.
 
 The action switches the job to the PHP version it installs. Use `setup-php: false` if later steps of the same job depend on a PHP setup made earlier.
+
+---
+
+## Pull request comment
+
+On `pull_request` and `pull_request_target` events, the result is posted as a comment on the pull request: the status line and, when there are problems, the same table as the job summary. The next run of the action updates that comment instead of adding another one, so a pull request keeps a single, current comment per PHP version: a workflow that lints with several `php-version` values gets one comment for each. When `php-version` is not set and the job brings its own PHP (`setup-php: false`), the PHP version found on `PATH` tells the comments apart.
+
+The comment needs the `pull-requests: write` permission:
+
+```yml
+permissions:
+  contents: read
+  pull-requests: write
+```
+
+When the comment cannot be posted, the lint result is not affected: the step logs why and goes on. That is the case on pull requests from forks and from Dependabot, where the `GITHUB_TOKEN` is read-only, and when the permission above is missing, which is reported as a warning.
+
+Set `comment: false` to turn the comment off, or give `github-token` a token of your own (a GitHub App token, for example) to post it as another identity. The job summary and the annotations do not depend on the comment.
 
 ---
 
@@ -286,7 +337,7 @@ If no file matches, the step fails instead of reporting success: a lint that che
 ```diff
        - name: Check PHP Lint
 -        uses: michaelw90/PHP-Lint@master
-+        uses: guibranco/github-php-lint-action@v1.0.0
++        uses: guibranco/github-php-lint-action@v1.1.0
 ```
 
 What changes:
@@ -294,43 +345,47 @@ What changes:
 - The PHP version is yours to choose, and defaults to the latest stable release instead of PHP 7.3
 - A `.phplint.yml` file is not read: use the `path`, `exclude` and `extensions` inputs
 - `vendor` and `node_modules` are skipped by default
-- Errors are annotated on the pull request and listed in the job summary
+- Errors are annotated on the pull request, listed in the job summary and posted as a comment
 
 ---
 
 ## Permissions
 
-The action only reads the files of the workspace:
+The action reads the files of the workspace and comments on the pull request:
 
 ```yml
 permissions:
   contents: read
+  pull-requests: write # not needed with 'comment: false'
 ```
 
 ---
 
 ## Runners
 
-The action is tested on GitHub-hosted Ubuntu runners. The lint script only needs `bash` 3.2 or newer, `find`, `sort` and `xargs`, so it also runs with the PHP of a container or of a self-hosted runner when `setup-php` is `false`.
+The action is tested on GitHub-hosted Ubuntu runners. The lint script only needs `bash` 3.2 or newer, `find`, `sort` and `xargs`, so it also runs with the PHP of a container or of a self-hosted runner when `setup-php` is `false`. The pull request comment is posted with [actions/github-script](https://github.com/actions/github-script), which runs wherever JavaScript actions do.
 
 ---
 
 ## Development
 
-The action is a composite action: [action.yml](action.yml) installs PHP and runs [scripts/php-lint.sh](scripts/php-lint.sh).
+The action is a composite action: [action.yml](action.yml) installs PHP, runs [scripts/php-lint.sh](scripts/php-lint.sh) and posts the comment with [scripts/pr-comment.js](scripts/pr-comment.js).
 
 ```bash
-# Run the test suite with the php executable on PATH
+# Run the test suite of the lint script with the php executable on PATH
 tests/run-tests.sh
 
 # Run only the tests whose name contains "exclude"
 tests/run-tests.sh exclude
 
+# Run the tests of the comment script
+node --test tests/*.test.js
+
 # Lint a directory with the script, without GitHub Actions
 INPUT_PATH=src scripts/php-lint.sh
 ```
 
-The [CI workflow](.github/workflows/ci.yml) runs ShellCheck, the test suite on every supported PHP version and the action itself. Every push to `main` that passes is released automatically, with the version computed by GitVersion: the patch number by default, or more when the commit message contains `+semver: minor` or `+semver: major`.
+The [CI workflow](.github/workflows/ci.yml) runs ShellCheck, both test suites (the lint script on every supported PHP version) and the action itself, which comments on the repository's own pull requests. Every push to `main` that passes is released automatically, with the version computed by GitVersion: the patch number by default, or more when the commit message contains `+semver: minor` or `+semver: major`.
 
 ---
 

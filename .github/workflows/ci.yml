@@ -53,13 +53,47 @@ jobs:
       - name: Run the test suite
         run: bash tests/run-tests.sh
 
-  test-action:
-    name: GitHub Actions Test
+  javascript-tests:
+    name: JavaScript tests
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run the tests of the pull request comment script
+        run: node --test tests/*.test.js
+
+  test-action:
+    name: GitHub Actions Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # the action comments on this repository's own pull requests
+    env:
+      # The comments can only be checked where the token can post them: on pull
+      # requests from this repository that were not opened by Dependabot.
+      CHECK_COMMENTS: >-
+        ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && github.actor != 'dependabot[bot]' }}
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Remove the comments of earlier runs
+        if: env.CHECK_COMMENTS == 'true'
+        run: |
+          set -o pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq '.[] | select((.body // "") | contains("<!-- github-php-lint-action")) | .id' |
+            while read -r id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id"
+              echo "Removed comment $id"
+            done
 
       - name: Lint with the default settings
         id: defaults
@@ -77,7 +111,13 @@ jobs:
           extensions: php, phtml
           fail-on-warnings: true
           annotations: true
+          comment: false
 
+      - name: Check the comments posted so far
+        if: env.CHECK_COMMENTS == 'true'
+        run: tests/check-pr-comments.sh "$PR_NUMBER" '=✅ **No syntax errors** in 3 files checked with PHP' '!8.3'
+
+      # Without php-version, the PHP found on PATH (8.3, from the previous step) keys the comment.
       - name: Lint with the PHP that is already installed
         id: installed
         uses: ./
@@ -134,11 +174,33 @@ jobs:
           expect '.broken.outputs."files-checked"' '2'
           expect '.broken.outputs.errors' '1'
 
+          expect '.custom.outputs."comment-url"' ''
+          if [[ $CHECK_COMMENTS == true ]]; then
+            expect '.defaults.outputs."comment-url"' 'https://github\.com/.+/pull/[0-9]+#issuecomment-[0-9]+'
+            expect '.installed.outputs."comment-url"' 'https://github\.com/.+/pull/[0-9]+#issuecomment-[0-9]+'
+            expect '.broken.outputs."comment-url"' 'https://github\.com/.+/pull/[0-9]+#issuecomment-[0-9]+'
+          else
+            expect '.defaults.outputs."comment-url"' ''
+            expect '.installed.outputs."comment-url"' ''
+            expect '.broken.outputs."comment-url"' ''
+          fi
+
           exit "$((failures > 0))"
+
+      - name: Check the comments
+        if: env.CHECK_COMMENTS == 'true'
+        run: |
+          # The failing run updated the comment of the default settings in place; the
+          # run with the PHP already installed (8.3) has a comment of its own.
+          tests/check-pr-comments.sh "$PR_NUMBER" \
+            '=❌ **1 syntax error** in 2 files checked with PHP' \
+            '=<code>.fixtures/broken/broken.php</code>' \
+            '!=No syntax errors' \
+            '8.3=✅ **No syntax errors** in 3 files checked with PHP 8.3.'
 
   create-release:
     name: Create release
-    needs: [static-analysis, unit-tests, test-action]
+    needs: [static-analysis, unit-tests, javascript-tests, test-action]
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     permissions:

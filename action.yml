@@ -39,6 +39,16 @@ inputs:
     description: "Add an inline annotation for every problem found."
     required: false
     default: "true"
+  comment:
+    description: >-
+      Post the result as a comment on the pull request, updated on every run (one comment per php-version).
+      Needs the pull-requests: write permission. Only for pull_request and pull_request_target events.
+    required: false
+    default: "true"
+  github-token:
+    description: "Token used to comment on the pull request."
+    required: false
+    default: ${{ github.token }}
 outputs:
   php-version:
     description: "The full PHP version the files were linted with."
@@ -52,6 +62,9 @@ outputs:
   warnings:
     description: "The number of warnings and deprecations PHP reported."
     value: ${{ steps.lint.outputs.warnings }}
+  comment-url:
+    description: "The URL of the comment posted on the pull request, when one was."
+    value: ${{ steps.comment.outputs.result }}
 runs:
   using: "composite"
   steps:
@@ -72,4 +85,27 @@ runs:
         INPUT_EXTENSIONS: ${{ inputs.extensions }}
         INPUT_FAIL_ON_WARNINGS: ${{ inputs.fail-on-warnings }}
         INPUT_ANNOTATIONS: ${{ inputs.annotations }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        PHP_LINT_REPORT_FILE: ${{ runner.temp }}/php-lint-report.md
       run: bash "$GITHUB_ACTION_PATH/scripts/php-lint.sh"
+
+    # Runs whether the lint passed or failed; the action still fails on syntax errors.
+    - name: Comment on the pull request
+      id: comment
+      if: >-
+        ${{ !cancelled() && steps.lint.outputs.comment == 'true' && steps.lint.outputs.report-file != ''
+        && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') }}
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        PHP_LINT_ACTION_PATH: ${{ github.action_path }}
+        PHP_LINT_REPORT_FILE: ${{ steps.lint.outputs.report-file }}
+        PHP_LINT_COMMENT_KEY: ${{ inputs.php-version }}
+        PHP_LINT_SETUP_PHP: ${{ inputs.setup-php }}
+        PHP_LINT_PHP_VERSION: ${{ steps.lint.outputs.php-version }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        result-encoding: string
+        script: |
+          const path = require('path');
+          const postComment = require(path.join(process.env.PHP_LINT_ACTION_PATH, 'scripts', 'pr-comment.js'));
+          return (await postComment({ github, context, core })) || '';
