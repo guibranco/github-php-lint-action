@@ -53,9 +53,23 @@ jobs:
       - name: Run the test suite
         run: bash tests/run-tests.sh
 
+  javascript-tests:
+    name: JavaScript tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run the tests of the pull request comment script
+        run: node --test tests/*.test.js
+
   test-action:
     name: GitHub Actions Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # the action comments on this repository's own pull requests
 
     steps:
       - name: Checkout
@@ -77,12 +91,21 @@ jobs:
           extensions: php, phtml
           fail-on-warnings: true
           annotations: true
+          comment: false
+
+      - name: Check the comments posted so far (pull requests only)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: tests/check-pr-comments.sh "$PR_NUMBER" '=✅ **No syntax errors** in 3 files checked with PHP' '!8.3'
 
       - name: Lint with the PHP that is already installed
         id: installed
         uses: ./
         with:
           setup-php: false
+          php-version: "8.3"
 
       - name: Create a file with a syntax error
         run: |
@@ -134,11 +157,34 @@ jobs:
           expect '.broken.outputs."files-checked"' '2'
           expect '.broken.outputs.errors' '1'
 
+          expect '.custom.outputs."comment-url"' ''
+          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
+            expect '.defaults.outputs."comment-url"' 'https://github\.com/.+/pull/[0-9]+#issuecomment-[0-9]+'
+            expect '.broken.outputs."comment-url"' 'https://github\.com/.+/pull/[0-9]+#issuecomment-[0-9]+'
+          else
+            expect '.defaults.outputs."comment-url"' ''
+            expect '.broken.outputs."comment-url"' ''
+          fi
+
           exit "$((failures > 0))"
+
+      - name: Check the comments (pull requests only)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # The failing run updated the comment of the default PHP version in place;
+          # the run with 'php-version: 8.3' has a comment of its own.
+          tests/check-pr-comments.sh "$PR_NUMBER" \
+            '=❌ **1 syntax error** in 2 files checked with PHP' \
+            '=<code>.fixtures/broken/broken.php</code>' \
+            '!=No syntax errors' \
+            '8.3=✅ **No syntax errors** in 3 files checked with PHP 8.3.'
 
   create-release:
     name: Create release
-    needs: [static-analysis, unit-tests, test-action]
+    needs: [static-analysis, unit-tests, javascript-tests, test-action]
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     permissions:

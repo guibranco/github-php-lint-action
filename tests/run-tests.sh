@@ -77,7 +77,8 @@ lint() {
   OUTPUT="$(
     cd "$SANDBOX" || exit 99
     unset GITHUB_ACTIONS GITHUB_WORKSPACE RUNNER_TEMP
-    unset INPUT_PATH INPUT_EXCLUDE INPUT_EXTENSIONS INPUT_FAIL_ON_WARNINGS INPUT_ANNOTATIONS
+    unset INPUT_PATH INPUT_EXCLUDE INPUT_EXTENSIONS INPUT_FAIL_ON_WARNINGS INPUT_ANNOTATIONS INPUT_COMMENT
+    unset PHP_LINT_REPORT_FILE
     export GITHUB_OUTPUT="$META/outputs" GITHUB_STEP_SUMMARY="$META/summary" TMPDIR="$META/tmp"
     for setting in "$@"; do
       export "${setting?}"
@@ -655,6 +656,61 @@ test_job_summary_is_capped() {
   lint
   assert_equals "$(summary | grep -c '^| ❌ ')" 100 "number of rows in the job summary"
   assert_contains "$(summary)" "_Showing the first 100 of 105 problems; the job log lists all of them._" "job summary"
+}
+
+test_comment_setting_is_passed_on() {
+  put src/ok.php "$VALID"
+
+  lint
+  assert_output comment true
+
+  lint INPUT_COMMENT=false
+  assert_output comment false
+
+  lint INPUT_COMMENT=no
+  assert_output comment false
+
+  # ...also when the lint fails, so that the comment can report the failure.
+  put src/broken.php "$PARSE_ERROR"
+  lint INPUT_COMMENT=true
+  assert_status 1
+  assert_output comment true
+
+  lint INPUT_COMMENT=maybe
+  assert_status 2
+  assert_contains "$OUTPUT" "Invalid value 'maybe' for 'comment': expected true or false."
+}
+
+test_report_file() {
+  put src/ok.php "$VALID"
+  put src/broken.php "$PARSE_ERROR"
+  local report
+
+  lint "PHP_LINT_REPORT_FILE=$META/report.md"
+  assert_status 1
+  assert_output report-file "$META/report.md"
+  report="$(cat "$META/report.md")"
+  assert_contains "$report" "❌ **1 syntax error** in 2 files checked with PHP $PHP_VERSION." "report"
+  assert_contains "$report" "| ❌ | <code>src/broken.php</code> | 2 | <strong>Parse error:</strong> syntax error" "report"
+  # The report is the job summary without its heading.
+  assert_not_contains "$report" "### PHP Lint" "report"
+  assert_equals "$(summary)" "$(printf '### PHP Lint\n\n%s' "$report")" "job summary"
+
+  # The file is written on success too.
+  lint INPUT_PATH=src/ok.php "PHP_LINT_REPORT_FILE=$META/report.md"
+  assert_status 0
+  assert_equals "$(cat "$META/report.md")" "✅ **No syntax errors** in 1 file checked with PHP $PHP_VERSION." "report"
+
+  # Without a file, there is no output either.
+  lint
+  assert_equals "$(sed -n 's/^report-file=//p' "$META/outputs")" "" "output 'report-file'"
+}
+
+test_unwritable_report_file_is_an_error() {
+  put src/ok.php "$VALID"
+  lint "PHP_LINT_REPORT_FILE=$META/nonexistent/report.md"
+  assert_status 2
+  assert_contains "$OUTPUT" "Could not write the report to '$META/nonexistent/report.md'."
 }
 
 test_runs_from_the_github_workspace() {

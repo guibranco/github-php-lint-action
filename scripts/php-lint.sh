@@ -16,6 +16,12 @@
 #                           deprecations while compiling a file. Default: false
 #   INPUT_ANNOTATIONS       true/false - emit GitHub annotations for each problem.
 #                           Default: true on GitHub Actions, false elsewhere
+#   INPUT_COMMENT           true/false - validated and passed on as the 'comment'
+#                           step output; action.yml decides from it whether to
+#                           comment on the pull request. Default: true
+#   PHP_LINT_REPORT_FILE    When set, the Markdown report (the job summary without
+#                           its heading) is also written to this file, for the
+#                           pull request comment.
 #
 # Exit codes: 0 = no problems, 1 = lint problems found, 2 = usage/environment error.
 #
@@ -277,7 +283,7 @@ lint_worker() {
 # ---------------------------------------------------------------------------
 
 main() {
-  local script_path php_version annotations fail_on_warnings
+  local script_path php_version annotations fail_on_warnings comment
   local item root pattern extension
   local -a directories=() files=() prune=() names=()
   local workdir list_file sorted_file find_errors
@@ -304,6 +310,7 @@ main() {
     annotations=$(parse_boolean annotations "${INPUT_ANNOTATIONS:-}" false) || exit "$EXIT_USAGE"
   fi
   fail_on_warnings=$(parse_boolean fail-on-warnings "${INPUT_FAIL_ON_WARNINGS:-}" false) || exit "$EXIT_USAGE"
+  comment=$(parse_boolean comment "${INPUT_COMMENT:-}" true) || exit "$EXIT_USAGE"
 
   # Paths are resolved from the repository root, which is also what annotations need.
   if [[ -n ${GITHUB_WORKSPACE:-} && -d ${GITHUB_WORKSPACE:-} ]]; then
@@ -463,19 +470,30 @@ main() {
     printf '✅ No syntax errors detected in %s\n' "$(plural "$total" file)"
   fi
 
+  if [[ -n ${PHP_LINT_REPORT_FILE:-} ]]; then
+    write_report "$sorted_file" "$php_version" "$total" "$errors" "$warnings" > "$PHP_LINT_REPORT_FILE" ||
+      die "Could not write the report to '$PHP_LINT_REPORT_FILE'."
+  fi
   if [[ -n ${GITHUB_OUTPUT:-} ]]; then
     {
       printf 'php-version=%s\n' "$php_version"
       printf 'files-checked=%s\n' "$total"
       printf 'errors=%s\n' "$errors"
       printf 'warnings=%s\n' "$warnings"
+      printf 'comment=%s\n' "$comment"
+      if [[ -n ${PHP_LINT_REPORT_FILE:-} ]]; then
+        printf 'report-file=%s\n' "$PHP_LINT_REPORT_FILE"
+      fi
     } >> "$GITHUB_OUTPUT"
   fi
   if [[ $annotations == true && $((errors + warnings)) -gt 0 ]]; then
     write_annotations "$sorted_file"
   fi
   if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
-    write_summary "$sorted_file" "$php_version" "$total" "$errors" "$warnings" >> "$GITHUB_STEP_SUMMARY"
+    {
+      printf '### PHP Lint\n\n'
+      write_report "$sorted_file" "$php_version" "$total" "$errors" "$warnings"
+    } >> "$GITHUB_STEP_SUMMARY"
   fi
 
   exit "$exit_code"
@@ -507,12 +525,12 @@ write_annotations() {
   printf '::endgroup::\n'
 }
 
-# Prints the job summary (Markdown).
-write_summary() {
+# Prints the Markdown report: a status line, then a table of the problems. It is
+# the body of the job summary and of the pull request comment.
+write_report() {
   local records=$1 php_version=$2 total=$3 errors=$4 warnings=$5
   local path line severity label message icon rows=0
 
-  printf '### PHP Lint\n\n'
   if [[ $errors -gt 0 && $warnings -gt 0 ]]; then
     printf '❌ **%s** and %s in %s checked with PHP %s.\n' \
       "$(plural "$errors" 'syntax error')" "$(plural "$warnings" warning)" "$(plural "$total" file)" "$php_version"
