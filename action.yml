@@ -41,8 +41,8 @@ inputs:
     default: "true"
   comment:
     description: >-
-      Post the result as a comment on the pull request, updated on every run. Needs the pull-requests: write
-      permission. Only for pull_request and pull_request_target events.
+      Post the result as a comment on the pull request, updated on every run (one comment per php-version).
+      Needs the pull-requests: write permission. Only for pull_request and pull_request_target events.
     required: false
     default: "true"
   github-token:
@@ -93,13 +93,15 @@ runs:
     - name: Comment on the pull request
       id: comment
       if: >-
-        ${{ !cancelled() && steps.lint.outputs.comment == 'true'
+        ${{ !cancelled() && steps.lint.outputs.comment == 'true' && steps.lint.outputs.report-file != ''
         && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') }}
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         PHP_LINT_ACTION_PATH: ${{ github.action_path }}
         PHP_LINT_REPORT_FILE: ${{ steps.lint.outputs.report-file }}
         PHP_LINT_COMMENT_KEY: ${{ inputs.php-version }}
+        PHP_LINT_SETUP_PHP: ${{ inputs.setup-php }}
+        PHP_LINT_PHP_VERSION: ${{ steps.lint.outputs.php-version }}
       with:
         github-token: ${{ inputs.github-token }}
         result-encoding: string

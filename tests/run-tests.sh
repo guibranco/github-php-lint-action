@@ -701,16 +701,33 @@ test_report_file() {
   assert_status 0
   assert_equals "$(cat "$META/report.md")" "✅ **No syntax errors** in 1 file checked with PHP $PHP_VERSION." "report"
 
-  # Without a file, there is no output either.
+  # Without a file, the output is empty.
   lint
-  assert_equals "$(sed -n 's/^report-file=//p' "$META/outputs")" "" "output 'report-file'"
+  assert_output report-file ""
+
+  # The report only serves the comment: nothing is written when it is off.
+  rm "$META/report.md"
+  lint INPUT_PATH=src/ok.php INPUT_COMMENT=false "PHP_LINT_REPORT_FILE=$META/report.md"
+  assert_status 0
+  assert_output report-file ""
+  if [[ -e "$META/report.md" ]]; then
+    fail "the report was written although the comment is off"
+  fi
 }
 
-test_unwritable_report_file_is_an_error() {
+test_unwritable_report_file_does_not_change_the_result() {
   put src/ok.php "$VALID"
   lint "PHP_LINT_REPORT_FILE=$META/nonexistent/report.md"
-  assert_status 2
-  assert_contains "$OUTPUT" "Could not write the report to '$META/nonexistent/report.md'."
+  assert_status 0
+  assert_contains "$OUTPUT" "php-lint: warning: Could not write the report to '$META/nonexistent/report.md', so the pull request comment is skipped."
+  assert_contains "$OUTPUT" "No syntax errors detected in 1 file"
+  assert_output files-checked 1
+  assert_output report-file ""
+  assert_contains "$(summary)" "✅ **No syntax errors**" "job summary"
+
+  lint GITHUB_ACTIONS=true "PHP_LINT_REPORT_FILE=$META/nonexistent/report.md"
+  assert_status 0
+  assert_contains "$OUTPUT" "::warning title=PHP Lint::Could not write the report to"
 }
 
 test_runs_from_the_github_workspace() {

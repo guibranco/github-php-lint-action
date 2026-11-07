@@ -9,7 +9,7 @@ const path = require('node:path');
 const { afterEach, beforeEach, describe, it } = require('node:test');
 
 const postComment = require('../scripts/pr-comment.js');
-const { buildBody, marker, MAX_BODY_LENGTH } = postComment;
+const { buildBody, commentKey, marker, MAX_BODY_LENGTH } = postComment;
 
 const SUCCESS_REPORT = '✅ **No syntax errors** in 3 files checked with PHP 8.5.12.\n';
 const FAILURE_REPORT = [
@@ -42,6 +42,13 @@ function fakeGitHub({ comments = [], failWith } = {}) {
             throw failWith;
           }
           return { data: { id: 900, html_url: 'https://github.com/o/r/pull/7#issuecomment-900' } };
+        },
+        deleteComment: async (params) => {
+          calls.push(['deleteComment', params]);
+          if (params.comment_id === 666) {
+            throw apiError(500, 'cannot delete 666');
+          }
+          return {};
         },
       },
     },
@@ -95,6 +102,24 @@ describe('marker', () => {
   });
 });
 
+describe('commentKey', () => {
+  it('is the php-version input when it is set', () => {
+    assert.equal(commentKey({ PHP_LINT_COMMENT_KEY: ' 8.4 ', PHP_LINT_SETUP_PHP: 'false', PHP_LINT_PHP_VERSION: '8.3.36' }), '8.4');
+    assert.equal(commentKey({ PHP_LINT_COMMENT_KEY: 'nightly', PHP_LINT_SETUP_PHP: 'true', PHP_LINT_PHP_VERSION: '8.6.0-dev' }), 'nightly');
+  });
+
+  it('is empty when the action installs PHP without a version', () => {
+    assert.equal(commentKey({ PHP_LINT_COMMENT_KEY: '', PHP_LINT_SETUP_PHP: 'true', PHP_LINT_PHP_VERSION: '8.5.12' }), '');
+    assert.equal(commentKey({}), '');
+  });
+
+  it('is the PHP version found when the job brought its own PHP', () => {
+    assert.equal(commentKey({ PHP_LINT_COMMENT_KEY: '', PHP_LINT_SETUP_PHP: 'false', PHP_LINT_PHP_VERSION: '8.3.36' }), '8.3');
+    assert.equal(commentKey({ PHP_LINT_SETUP_PHP: 'false', PHP_LINT_PHP_VERSION: '8.6.0RC4' }), '8.6');
+    assert.equal(commentKey({ PHP_LINT_SETUP_PHP: 'false', PHP_LINT_PHP_VERSION: '' }), '');
+  });
+});
+
 describe('buildBody', () => {
   it('wraps the report with the marker, a heading and a footer', () => {
     const body = buildBody({ marker: marker('8.5'), report: SUCCESS_REPORT, runUrl: 'https://github.com/o/r/actions/runs/123' });
@@ -140,7 +165,7 @@ describe('buildBody', () => {
     assert.ok(shown > 0 && shown < 500, `${shown} rows are shown`);
     assert.match(body, /\| <code>src\/file1\.php<\/code> \| 1 \|/);
     assert.doesNotMatch(body, /src\/file500\.php/);
-    assert.match(body, new RegExp(`_Only the first ${shown} problems are shown in this comment; the job summary and the job log list all of them._`));
+    assert.match(body, new RegExp(`_Only the first ${shown} problems are shown in this comment; the job log lists all of them._`));
     assert.doesNotMatch(body, /Showing the first 500 of 505/);
     assert.match(body, /<sub>Posted by .*<\/sub>$/);
   });
@@ -203,6 +228,46 @@ describe('postComment', () => {
     assert.equal(calls[1][1].comment_id, 3);
     assert.match(calls[1][1].body, /src\/broken\.php/);
     assert.match(core.logs.info[0], /Updated the comment on pull request #7/);
+  });
+
+  it('removes duplicate comments left by runs that started at the same time', async () => {
+    const { github, calls } = fakeGitHub({
+      comments: [
+        { id: 30, body: `${marker('8.4')}\n### 🐘 PHP Lint\n\nnewest duplicate`, html_url: 'https://github.com/o/r/pull/7#issuecomment-30' },
+        { id: 10, body: `${marker('8.4')}\n### 🐘 PHP Lint\n\noriginal`, html_url: 'https://github.com/o/r/pull/7#issuecomment-10' },
+        { id: 666, body: `${marker('8.4')}\n### 🐘 PHP Lint\n\nundeletable duplicate`, html_url: 'https://github.com/o/r/pull/7#issuecomment-666' },
+      ],
+    });
+    const core = fakeCore();
+
+    const url = await postComment({ github, context: fakeContext(), core }, env);
+
+    // The oldest comment is kept and updated; the others are removed, errors included.
+    assert.equal(url, 'https://github.com/o/r/pull/7#issuecomment-10');
+    assert.deepEqual(
+      calls.map(([name, params]) => [name, params.comment_id]),
+      [
+        ['listComments', undefined],
+        ['updateComment', 10],
+        ['deleteComment', 30],
+        ['deleteComment', 666],
+      ]
+    );
+    assert.deepEqual(core.logs.warning, []);
+    assert.match(core.logs.info[1], /Removed the duplicate comment .*#issuecomment-30/);
+    assert.match(core.logs.info[2], /Could not remove the duplicate comment .*#issuecomment-666: cannot delete 666/);
+  });
+
+  it('keys the comment by the PHP version found when the job brought its own PHP', async () => {
+    const { github, calls } = fakeGitHub();
+    const core = fakeCore();
+
+    await postComment(
+      { github, context: fakeContext(), core },
+      { PHP_LINT_REPORT_FILE: reportFile, PHP_LINT_COMMENT_KEY: '', PHP_LINT_SETUP_PHP: 'false', PHP_LINT_PHP_VERSION: '8.3.36' }
+    );
+
+    assert.ok(calls[1][1].body.startsWith('<!-- github-php-lint-action php-version="8.3" -->'));
   });
 
   it('does nothing outside a pull request', async () => {
@@ -276,6 +341,17 @@ describe('postComment', () => {
 
     assert.equal(url, undefined);
     assert.equal(core.logs.warning.length, 1);
-    assert.match(core.logs.warning[0], /Could not post the PHP Lint comment on pull request #7: socket hang up\./);
+    assert.equal(core.logs.warning[0], 'Could not post the PHP Lint comment on pull request #7: socket hang up.');
+  });
+
+  it('does not blame the token for an unexpected error on a fork', async () => {
+    const { github } = fakeGitHub({ failWith: apiError(502, 'Bad Gateway') });
+    const core = fakeCore();
+    const pullRequest = { number: 7, head: { repo: { fork: true, full_name: 'someone/r' } }, base: { repo: { full_name: 'o/r' } } };
+
+    await postComment({ github, context: fakeContext({ pullRequest, actor: 'dependabot[bot]' }), core }, env);
+
+    assert.deepEqual(core.logs.warning, ['Could not post the PHP Lint comment on pull request #7 (HTTP 502): Bad Gateway.']);
+    assert.deepEqual(core.logs.info, []);
   });
 });

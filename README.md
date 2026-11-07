@@ -228,7 +228,7 @@ PHP 8.5.12 - linting 25 files with 4 parallel jobs
 > | ❌  | `src/Api/Jobs.php`       |   42 | **Parse error:** syntax error, unexpected token "}"                                                                                             |
 > | ⚠️  | `src/Service/Github.php` |   17 | **Deprecated:** fetch(): Implicitly marking parameter $token as nullable is deprecated, the explicit nullable type must be used instead |
 
-### Pull request comment
+### Comment on the pull request
 
 > ### 🐘 PHP Lint
 >
@@ -282,7 +282,7 @@ The action switches the job to the PHP version it installs. Use `setup-php: fals
 
 ## Pull request comment
 
-On `pull_request` and `pull_request_target` events, the result is posted as a comment on the pull request: the status line and, when there are problems, the same table as the job summary. The next run of the action updates that comment instead of adding another one, so a pull request keeps a single, current comment per PHP version: a workflow that lints with several `php-version` values gets one comment for each.
+On `pull_request` and `pull_request_target` events, the result is posted as a comment on the pull request: the status line and, when there are problems, the same table as the job summary. The next run of the action updates that comment instead of adding another one, so a pull request keeps a single, current comment per PHP version: a workflow that lints with several `php-version` values gets one comment for each. When `php-version` is not set and the job brings its own PHP (`setup-php: false`), the PHP version found on `PATH` tells the comments apart.
 
 The comment needs the `pull-requests: write` permission:
 
@@ -292,7 +292,7 @@ permissions:
   pull-requests: write
 ```
 
-When the comment cannot be posted, the lint result still stands: the step logs why and goes on, and the job fails only if there are syntax errors. That is the case on pull requests from forks and from Dependabot, where the `GITHUB_TOKEN` is read-only, and when the permission above is missing, which is reported as a warning.
+When the comment cannot be posted, the lint result is not affected: the step logs why and goes on. That is the case on pull requests from forks and from Dependabot, where the `GITHUB_TOKEN` is read-only, and when the permission above is missing, which is reported as a warning.
 
 Set `comment: false` to turn the comment off, or give `github-token` a token of your own (a GitHub App token, for example) to post it as another identity. The job summary and the annotations do not depend on the comment.
 

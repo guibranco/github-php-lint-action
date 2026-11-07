@@ -19,9 +19,9 @@
 #   INPUT_COMMENT           true/false - validated and passed on as the 'comment'
 #                           step output; action.yml decides from it whether to
 #                           comment on the pull request. Default: true
-#   PHP_LINT_REPORT_FILE    When set, the Markdown report (the job summary without
-#                           its heading) is also written to this file, for the
-#                           pull request comment.
+#   PHP_LINT_REPORT_FILE    When set (and INPUT_COMMENT is not false), the Markdown
+#                           report - the job summary without its heading - is also
+#                           written to this file, for the pull request comment.
 #
 # Exit codes: 0 = no problems, 1 = lint problems found, 2 = usage/environment error.
 #
@@ -144,6 +144,15 @@ die() {
     printf 'php-lint: %s\n' "$1" >&2
   fi
   exit "$EXIT_USAGE"
+}
+
+# Reports a problem that does not change the result of the lint.
+warn() {
+  if on_github_actions; then
+    printf '::warning title=PHP Lint::%s\n' "$(escape_data "$1")"
+  else
+    printf 'php-lint: warning: %s\n' "$1" >&2
+  fi
 }
 
 # Reads a boolean setting: parse_boolean <name> <value> <default>
@@ -283,7 +292,7 @@ lint_worker() {
 # ---------------------------------------------------------------------------
 
 main() {
-  local script_path php_version annotations fail_on_warnings comment
+  local script_path php_version annotations fail_on_warnings comment report_file
   local item root pattern extension
   local -a directories=() files=() prune=() names=()
   local workdir list_file sorted_file find_errors
@@ -470,9 +479,15 @@ main() {
     printf '✅ No syntax errors detected in %s\n' "$(plural "$total" file)"
   fi
 
-  if [[ -n ${PHP_LINT_REPORT_FILE:-} ]]; then
-    write_report "$sorted_file" "$php_version" "$total" "$errors" "$warnings" > "$PHP_LINT_REPORT_FILE" ||
-      die "Could not write the report to '$PHP_LINT_REPORT_FILE'."
+  # The report file only serves the pull request comment: a problem with it is
+  # reported, but does not change the result of the lint.
+  report_file=''
+  if [[ -n ${PHP_LINT_REPORT_FILE:-} && $comment == true ]]; then
+    if write_report "$sorted_file" "$php_version" "$total" "$errors" "$warnings" > "$PHP_LINT_REPORT_FILE" 2> /dev/null; then
+      report_file=$PHP_LINT_REPORT_FILE
+    else
+      warn "Could not write the report to '$PHP_LINT_REPORT_FILE', so the pull request comment is skipped."
+    fi
   fi
   if [[ -n ${GITHUB_OUTPUT:-} ]]; then
     {
@@ -481,9 +496,7 @@ main() {
       printf 'errors=%s\n' "$errors"
       printf 'warnings=%s\n' "$warnings"
       printf 'comment=%s\n' "$comment"
-      if [[ -n ${PHP_LINT_REPORT_FILE:-} ]]; then
-        printf 'report-file=%s\n' "$PHP_LINT_REPORT_FILE"
-      fi
+      printf 'report-file=%s\n' "$report_file"
     } >> "$GITHUB_OUTPUT"
   fi
   if [[ $annotations == true && $((errors + warnings)) -gt 0 ]]; then

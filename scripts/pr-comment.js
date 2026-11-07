@@ -2,8 +2,10 @@
 //
 // action.yml runs it through actions/github-script after the lint step, with:
 //   PHP_LINT_REPORT_FILE  the Markdown report written by scripts/php-lint.sh
-//   PHP_LINT_COMMENT_KEY  the requested PHP version, so that a workflow linting
-//                         with several versions keeps one comment per version
+//   PHP_LINT_COMMENT_KEY  the php-version input, so that a workflow linting with
+//                         several versions keeps one comment per version
+//   PHP_LINT_SETUP_PHP    the setup-php input
+//   PHP_LINT_PHP_VERSION  the PHP version the files were linted with
 //
 // It never fails the step: when the comment cannot be posted (the token is
 // read-only on pull requests from forks and from Dependabot, or lacks the
@@ -28,6 +30,23 @@ function marker(key) {
   return `${MARKER_PREFIX} php-version="${safeKey}" -->`;
 }
 
+// The php-version input tells the comments of a workflow apart. Without it, the
+// action installs the latest PHP, so there is one comment; unless the job brought
+// its own PHP (setup-php: false), when the version found tells them apart.
+function commentKey(env) {
+  const requested = String(env.PHP_LINT_COMMENT_KEY || '').trim();
+  if (requested) {
+    return requested;
+  }
+  if (String(env.PHP_LINT_SETUP_PHP || '').trim() === 'false') {
+    const version = /^(\d+)\.(\d+)/.exec(String(env.PHP_LINT_PHP_VERSION || '').trim());
+    if (version) {
+      return `${version[1]}.${version[2]}`;
+    }
+  }
+  return '';
+}
+
 // Builds the comment body, dropping rows from the end of the table when the
 // report is too long for one comment.
 function buildBody({ marker: commentMarker, report, runUrl }) {
@@ -38,10 +57,7 @@ function buildBody({ marker: commentMarker, report, runUrl }) {
     const parts = [commentMarker, HEADING, '', ...lines];
     if (hidden > 0) {
       const shown = lines.filter((line) => ROW_PATTERN.test(line)).length;
-      parts.push(
-        '',
-        `_Only the first ${shown} problems are shown in this comment; the job summary and the job log list all of them._`
-      );
+      parts.push('', `_Only the first ${shown} problems are shown in this comment; the job log lists all of them._`);
     }
     const run = runUrl ? ` · [Workflow run](${runUrl})` : '';
     parts.push('', `<sub>Posted by [github-php-lint-action](${ACTION_URL})${run}</sub>`);
@@ -71,14 +87,30 @@ function buildBody({ marker: commentMarker, report, runUrl }) {
   return body;
 }
 
-async function findComment(github, { owner, repo, issue_number }, commentMarker) {
+// The comments carrying the marker, oldest first.
+async function findComments(github, { owner, repo, issue_number }, commentMarker) {
   const comments = await github.paginate(github.rest.issues.listComments, {
     owner,
     repo,
     issue_number,
     per_page: 100,
   });
-  return comments.find((comment) => typeof comment.body === 'string' && comment.body.includes(commentMarker));
+  return comments
+    .filter((comment) => typeof comment.body === 'string' && comment.body.includes(commentMarker))
+    .sort((a, b) => a.id - b.id);
+}
+
+// Two runs that start at the same time can both create the comment; the next
+// run keeps the oldest and removes the others.
+async function removeDuplicates(github, core, { owner, repo }, duplicates) {
+  for (const duplicate of duplicates) {
+    try {
+      await github.rest.issues.deleteComment({ owner, repo, comment_id: duplicate.id });
+      core.info(`Removed the duplicate comment ${duplicate.html_url}`);
+    } catch (error) {
+      core.info(`Could not remove the duplicate comment ${duplicate.html_url}: ${error.message}`);
+    }
+  }
 }
 
 function isFromFork(pullRequest) {
@@ -107,7 +139,7 @@ async function postComment({ github, context, core }, env = process.env) {
     return undefined;
   }
 
-  const commentMarker = marker(env.PHP_LINT_COMMENT_KEY);
+  const commentMarker = marker(commentKey(env));
   const runUrl =
     context.serverUrl && context.runId
       ? `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
@@ -116,7 +148,8 @@ async function postComment({ github, context, core }, env = process.env) {
   const target = { owner: context.repo.owner, repo: context.repo.repo, issue_number: pullRequest.number };
 
   try {
-    const existing = await findComment(github, target, commentMarker);
+    const [existing, ...duplicates] = await findComments(github, target, commentMarker);
+    let url;
     if (existing) {
       const { data } = await github.rest.issues.updateComment({
         owner: target.owner,
@@ -125,32 +158,35 @@ async function postComment({ github, context, core }, env = process.env) {
         body,
       });
       core.info(`Updated the comment on pull request #${pullRequest.number}: ${data.html_url}`);
-      return data.html_url;
+      url = data.html_url;
+    } else {
+      const { data } = await github.rest.issues.createComment({ ...target, body });
+      core.info(`Posted a comment on pull request #${pullRequest.number}: ${data.html_url}`);
+      url = data.html_url;
     }
-    const { data } = await github.rest.issues.createComment({ ...target, body });
-    core.info(`Posted a comment on pull request #${pullRequest.number}: ${data.html_url}`);
-    return data.html_url;
+    if (duplicates.length > 0) {
+      await removeDuplicates(github, core, target, duplicates);
+    }
+    return url;
   } catch (error) {
     const status = error.status ? ` (HTTP ${error.status})` : '';
-    const fromFork = isFromFork(pullRequest);
-    const fromDependabot = context.actor === 'dependabot[bot]';
-    let hint;
-    if (fromFork) {
-      hint = 'The GITHUB_TOKEN is read-only on pull requests from forks, so the comment cannot be posted there.';
-    } else if (fromDependabot) {
-      hint =
-        "The GITHUB_TOKEN is read-only on Dependabot's pull requests unless the workflow runs on pull_request_target, " +
-        'so the comment cannot be posted there.';
+    const problem = `Could not post the PHP Lint comment on pull request #${pullRequest.number}${status}: ${error.message}.`;
+    // 403 is what a read-only token gets; 404 what a token that cannot see the repository gets.
+    const refused = error.status === 403 || error.status === 404;
+    if (refused && isFromFork(pullRequest)) {
+      core.info(`${problem} The GITHUB_TOKEN is read-only on pull requests from forks, so the comment cannot be posted there.`);
+    } else if (refused && context.actor === 'dependabot[bot]') {
+      core.info(
+        `${problem} The GITHUB_TOKEN is read-only on Dependabot's pull requests unless the workflow runs on ` +
+          'pull_request_target, so the comment cannot be posted there.'
+      );
+    } else if (refused) {
+      core.warning(
+        `${problem} The token needs the 'pull-requests: write' permission to comment on the pull request; ` +
+          "set 'comment: false' to turn the comment off."
+      );
     } else {
-      hint =
-        "The token needs the 'pull-requests: write' permission to comment on the pull request; " +
-        "set 'comment: false' to turn the comment off.";
-    }
-    const message = `Could not post the PHP Lint comment on pull request #${pullRequest.number}${status}: ${error.message}. ${hint}`;
-    if (fromFork || fromDependabot) {
-      core.info(message);
-    } else {
-      core.warning(message);
+      core.warning(problem);
     }
     return undefined;
   }
@@ -158,5 +194,6 @@ async function postComment({ github, context, core }, env = process.env) {
 
 module.exports = postComment;
 module.exports.buildBody = buildBody;
+module.exports.commentKey = commentKey;
 module.exports.marker = marker;
 module.exports.MAX_BODY_LENGTH = MAX_BODY_LENGTH;
