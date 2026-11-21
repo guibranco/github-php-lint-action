@@ -292,7 +292,7 @@ permissions:
   pull-requests: write
 ```
 
-When the comment cannot be posted, the lint result is not affected: the step logs why and goes on. That is the case on pull requests from forks and from Dependabot, where the `GITHUB_TOKEN` is read-only, and when the permission above is missing, which is reported as a warning.
+When the comment cannot be posted, the lint result is not affected: the step logs why and goes on. That is the case on pull requests from forks, where the `GITHUB_TOKEN` is read-only, on Dependabot's pull requests when the repository gives Dependabot a read-only token, and when the permission above is missing, which is reported as a warning.
 
 Set `comment: false` to turn the comment off, or give `github-token` a token of your own (a GitHub App token, for example) to post it as another identity. The job summary and the annotations do not depend on the comment.
 
