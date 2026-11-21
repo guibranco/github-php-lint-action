@@ -72,11 +72,11 @@ jobs:
       pull-requests: write # the action comments on this repository's own pull requests
     env:
       # The comments can only be checked where the token can post them: on pull
-      # requests from this repository that were not opened by Dependabot.
+      # requests from this repository. Dependabot's pull requests are included, since
+      # its runs get the pull-requests: write permission set above.
       CHECK_COMMENTS: >-
         ${{ github.event_name == 'pull_request'
-        && github.event.pull_request.head.repo.full_name == github.repository
-        && github.actor != 'dependabot[bot]' }}
+        && github.event.pull_request.head.repo.full_name == github.repository }}
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
